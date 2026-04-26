@@ -78,3 +78,8 @@
 {"ts":"2026-04-26T20:49:53+00:00","exchange":"okx","symbol":"DOGEUSDT","bid":0.0993,"ask":0.09931,"mid":0.099305}
 {"ts":"2026-04-26T20:49:53+00:00","exchange":"okx","symbol":"ETHUSDT","bid":2365.43,"ask":2365.44,"mid":2365.435}
 {"ts":"2026-04-26T20:49:53+00:00","exchange":"okx","symbol":"SOLUSDT","bid":86.79,"ask":86.8,"mid":86.795}
+{"ts":"2026-04-26T21:30:48+00:00","exchange":"okx","symbol":"ETHUSDT","bid":2364.86,"ask":2364.87,"mid":2364.865}
+{"ts":"2026-04-26T21:30:48+00:00","exchange":"okx","symbol":"XRPUSDT","bid":1.4284,"ask":1.4285,"mid":1.42845}
+{"ts":"2026-04-26T21:30:48+00:00","exchange":"okx","symbol":"DOGEUSDT","bid":0.09921,"ask":0.09922,"mid":0.099215}
+{"ts":"2026-04-26T21:30:48+00:00","exchange":"okx","symbol":"SOLUSDT","bid":86.8,"ask":86.81,"mid":86.805}
+{"ts":"2026-04-26T21:30:48+00:00","exchange":"okx","symbol":"BTCUSDT","bid":78168.6,"ask":78168.7,"mid":78168.65}
