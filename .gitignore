@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+prices.db
+crypto_prices.db
+small_market.db
+config.local.json
+.env
+*.log
+*_run.log

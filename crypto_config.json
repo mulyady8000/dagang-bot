@@ -1,0 +1,18 @@
+{
+  "poll_interval_seconds": 10,
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "DOGEUSDT",
+    "XRPUSDT"
+  ],
+  "exchanges": [
+    "binance",
+    "bybit",
+    "okx"
+  ],
+  "alert_spread_pct": 0.3,
+  "webhook_url": "",
+  "webhook_type": "discord"
+}

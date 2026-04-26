@@ -1,0 +1,16 @@
+{
+  "poll_interval_seconds": 60,
+  "min_volume_usd": 10000,
+  "max_volume_usd": 500000,
+  "max_markets_to_watch": 30,
+  "min_tradeable_size_usd": 50.0,
+  "alert_arb_pct": 1.5,
+  "alert_price_move_pct": 8.0,
+  "exclude_keywords": [
+    "nba", "nhl", "mlb", "nfl", "mls", "ufc", "boxing",
+    "soccer", "tennis", "golf", "f1-", "nascar",
+    "dota", "valorant", "val-", "lol-", "csgo", "cs2", "esports"
+  ],
+  "webhook_url": "",
+  "webhook_type": "discord"
+}

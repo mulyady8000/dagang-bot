@@ -1,0 +1,13 @@
+{
+  "poll_interval_seconds": 30,
+  "min_volume_usd": 50000,
+  "max_markets_to_watch": 20,
+  "alert_thresholds": {
+    "yes_no_sum_deviation": 0.02,
+    "price_change_pct": 5.0
+  },
+  "watch_slugs": [],
+  "keyword_filter": ["bitcoin", "btc", "ethereum", "eth", "solana", "crypto", "doge", "xrp", "altcoin"],
+  "webhook_url": "",
+  "webhook_type": "discord"
+}
