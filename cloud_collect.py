@@ -25,6 +25,7 @@ if hasattr(sys.stdout, "reconfigure"):
 import crypto_monitor as cm
 import monitor as pm
 import small_market_monitor as sm
+import btc_threshold as btc
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -123,31 +124,60 @@ def collect_small_markets(ts: str) -> list[dict]:
     return out
 
 
-def main() -> int:
-    started = time.time()
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    date_str = ts[:10]  # YYYY-MM-DD
-
-    print(f"[{ts}] starting single-shot collect")
-
+def collect_one_pass(ts: str) -> int:
+    """Run one full snapshot across all sources. Returns rows written."""
+    date_str = ts[:10]
     sources = [
-        ("crypto",       lambda: collect_crypto(ts)),
-        ("polymarket",   lambda: collect_polymarket_top(ts)),
-        ("small_market", lambda: collect_small_markets(ts)),
+        ("crypto",        lambda: collect_crypto(ts)),
+        ("polymarket",    lambda: collect_polymarket_top(ts)),
+        ("small_market",  lambda: collect_small_markets(ts)),
+        ("btc_threshold", lambda: btc.collect(ts)),
     ]
-
-    total_rows = 0
+    total = 0
     for name, fetch in sources:
         try:
             rows = fetch()
             append_jsonl(DATA_DIR / date_str / f"{name}.jsonl", rows)
-            print(f"  {name}: {len(rows)} rows -> data/{date_str}/{name}.jsonl")
-            total_rows += len(rows)
+            print(f"  {name}: {len(rows)} rows", flush=True)
+            total += len(rows)
         except Exception as e:
-            print(f"  {name}: FAILED ({type(e).__name__}: {e})")
+            print(f"  {name}: FAILED ({type(e).__name__}: {e})", flush=True)
+    return total
+
+
+def main() -> int:
+    """Poll repeatedly within the GitHub Actions runtime budget.
+
+    GitHub's 5-min cron is unreliable (skips runs during high load). To make the
+    most of every actual invocation we get, loop internally for `LOOP_SECONDS`
+    and poll every `POLL_INTERVAL` seconds. Tunable via env vars so the workflow
+    YAML can change cadence without touching this script.
+    """
+    loop_seconds = int(__import__("os").environ.get("LOOP_SECONDS", "540"))   # 9 min
+    interval = int(__import__("os").environ.get("POLL_INTERVAL", "30"))       # 30s
+    deadline = time.time() + loop_seconds
+
+    n_passes = 0
+    total_rows = 0
+    started = time.time()
+    print(f"loop mode: {loop_seconds}s budget, {interval}s interval", flush=True)
+
+    while time.time() < deadline:
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        print(f"\n[{ts}] pass #{n_passes + 1}", flush=True)
+        try:
+            total_rows += collect_one_pass(ts)
+        except Exception as e:
+            print(f"  pass FAILED: {type(e).__name__}: {e}", flush=True)
+        n_passes += 1
+        # sleep to next interval boundary, but don't exceed deadline
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
 
     elapsed = time.time() - started
-    print(f"done in {elapsed:.1f}s, {total_rows} total rows")
+    print(f"\ndone: {n_passes} passes in {elapsed:.0f}s, {total_rows} total rows", flush=True)
     return 0
 
 

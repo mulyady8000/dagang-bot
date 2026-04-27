@@ -8,9 +8,11 @@
     "XRPUSDT"
   ],
   "exchanges": [
+    "okx",
+    "kraken",
+    "coinbase",
     "binance",
-    "bybit",
-    "okx"
+    "bybit"
   ],
   "alert_spread_pct": 0.3,
   "webhook_url": "",

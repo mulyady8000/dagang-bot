@@ -153,7 +153,56 @@ def fetch_okx(symbol: str) -> Quote | None:
         return None
 
 
-FETCHERS = {"binance": fetch_binance, "bybit": fetch_bybit, "okx": fetch_okx}
+# Kraken uses XBT for BTC, XDG for DOGE.
+KRAKEN_SYMBOL_MAP = {
+    "BTCUSDT": "XBTUSDT",
+    "ETHUSDT": "ETHUSDT",
+    "SOLUSDT": "SOLUSDT",
+    "DOGEUSDT": "XDGUSDT",
+    "XRPUSDT": "XRPUSDT",
+}
+
+
+def fetch_kraken(symbol: str) -> Quote | None:
+    pair = KRAKEN_SYMBOL_MAP.get(symbol, symbol)
+    try:
+        r = requests.get(
+            "https://api.kraken.com/0/public/Ticker",
+            params={"pair": pair},
+            timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        result = r.json().get("result", {})
+        if not result:
+            return None
+        d = next(iter(result.values()))  # only one pair was requested
+        return Quote("kraken", symbol, float(d["b"][0]), float(d["a"][0]))
+    except (requests.RequestException, KeyError, ValueError, IndexError, StopIteration):
+        return None
+
+
+def fetch_coinbase(symbol: str) -> Quote | None:
+    """Coinbase Exchange uses 'BTC-USDT' format."""
+    cb_symbol = symbol.replace("USDT", "-USDT")
+    try:
+        r = requests.get(
+            f"https://api.exchange.coinbase.com/products/{cb_symbol}/ticker",
+            timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        d = r.json()
+        return Quote("coinbase", symbol, float(d["bid"]), float(d["ask"]))
+    except (requests.RequestException, KeyError, ValueError):
+        return None
+
+
+FETCHERS = {
+    "binance": fetch_binance,
+    "bybit": fetch_bybit,
+    "okx": fetch_okx,
+    "kraken": fetch_kraken,
+    "coinbase": fetch_coinbase,
+}
 
 
 def fetch_all_parallel(symbols: list[str], exchanges: list[str]) -> list[Quote]:
