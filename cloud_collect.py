@@ -26,6 +26,7 @@ import crypto_monitor as cm
 import monitor as pm
 import small_market_monitor as sm
 import btc_threshold as btc
+import resolution_tracker as rt
 
 ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
@@ -161,6 +162,17 @@ def main() -> int:
     total_rows = 0
     started = time.time()
     print(f"loop mode: {loop_seconds}s budget, {interval}s interval", flush=True)
+
+    # Resolution tracker only needs to run once per invocation — outcomes
+    # don't change every 30s. Doing it inside the loop would just duplicate rows.
+    res_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        res_rows = rt.collect(res_ts)
+        if res_rows:
+            append_jsonl(DATA_DIR / res_ts[:10] / "resolutions.jsonl", res_rows)
+            total_rows += len(res_rows)
+    except Exception as e:
+        print(f"  resolution tracker FAILED: {type(e).__name__}: {e}", flush=True)
 
     while time.time() < deadline:
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -10,9 +10,7 @@
   "exchanges": [
     "okx",
     "kraken",
-    "coinbase",
-    "binance",
-    "bybit"
+    "coinbase"
   ],
   "alert_spread_pct": 0.3,
   "webhook_url": "",

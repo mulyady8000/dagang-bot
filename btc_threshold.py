@@ -48,15 +48,34 @@ OKX_TICKER_URL = "https://www.okx.com/api/v5/market/ticker"
 
 HTTP_TIMEOUT = 15
 
-# Slug patterns that look like BTC threshold markets.
-# Captures (number, optional 'k' suffix). e.g.:
-#   "...reach-79k..."     -> ("79", "k")  -> $79,000
-#   "...dip-to-70000..."  -> ("70000", "") -> $70,000
-#   "...above-150k..."    -> ("150", "k") -> $150,000
-SLUG_RE = re.compile(
-    r"(?:bitcoin|btc).*?(?:above|reach|hit|dip[- ]?to|below|under|between)[- ]?\$?(\d+)(k?)",
+# Threshold-style slug:  "...above-79k...", "...dip-to-70000...", "...reach-150k..."
+# Captures (number, optional 'k' suffix).
+THRESHOLD_RE = re.compile(
+    r"(?:bitcoin|btc).*?(above|reach|hit|dip[- ]?to|below|under)[- ]?\$?(\d+)(k?)",
     re.IGNORECASE,
 )
+
+# Range-style slug:  "...between-66000-68000...", "...between-78000-and-80000..."
+# Captures (low, low_k_suffix, high, high_k_suffix).
+BETWEEN_RE = re.compile(
+    r"(?:bitcoin|btc).*?between[- ]?\$?(\d+)(k?)[- ]?(?:and[- ]?)?\$?(\d+)(k?)",
+    re.IGNORECASE,
+)
+
+
+def _to_dollars(n: int, has_k: bool) -> int:
+    if has_k:
+        return n * 1000
+    if n < 1000:
+        return n * 1000
+    return n
+
+
+# BTC realized vol on the dataset is ~3-4% daily. Implied is usually higher.
+# Tuneable via env if you want to backtest different assumptions.
+DAILY_VOL = float(__import__("os").environ.get("BTC_DAILY_VOL", "0.04"))
+DAILY_DRIFT = float(__import__("os").environ.get("BTC_DAILY_DRIFT", "0.0005"))
+MIN_DAYS_LEFT = 0.01  # filter out markets with under ~15 minutes to expiry
 
 
 def fetch_btc_spot() -> float | None:
@@ -90,26 +109,37 @@ def fetch_btc_threshold_markets() -> list[dict]:
         question = m.get("question", "")
         if "bitcoin" not in slug and "btc" not in slug:
             continue
-        match = SLUG_RE.search(slug)
-        if not match:
+        # Skip markets we can't model: "X or Y first" races, conditionals.
+        if "first" in slug or " or " in question.lower():
             continue
-        n = int(match.group(1))
-        has_k_suffix = bool(match.group(2))
-        if has_k_suffix:
-            threshold = n * 1000      # "79k" -> 79000
-        elif n < 1000:
-            threshold = n * 1000      # bare "79" assumed thousands (rare)
-        else:
-            threshold = n             # "70000" stays 70000
 
-        # Sanity: BTC thresholds we care about are between $10k and $1M.
-        if threshold < 10_000 or threshold > 1_000_000:
-            continue
-        # detect direction
-        if any(w in slug for w in ["below", "under", "dip"]):
-            direction = "below"
+        kind: str | None = None
+        threshold: int | None = None
+        low: int | None = None
+        high: int | None = None
+
+        # Try "between X and Y" first — they otherwise match THRESHOLD_RE wrongly.
+        bm = BETWEEN_RE.search(slug)
+        if bm:
+            lo = _to_dollars(int(bm.group(1)), bool(bm.group(2)))
+            hi = _to_dollars(int(bm.group(3)), bool(bm.group(4)))
+            if lo > hi:
+                lo, hi = hi, lo
+            if 10_000 <= lo < hi <= 1_000_000:
+                kind = "between"
+                low, high = lo, hi
         else:
-            direction = "above"
+            tm = THRESHOLD_RE.search(slug)
+            if tm:
+                verb = tm.group(1).lower()
+                n = int(tm.group(2))
+                t = _to_dollars(n, bool(tm.group(3)))
+                if 10_000 <= t <= 1_000_000:
+                    threshold = t
+                    kind = "below" if any(w in verb for w in ("below", "under", "dip")) else "above"
+
+        if kind is None:
+            continue
 
         token_ids_raw = m.get("clobTokenIds")
         if not token_ids_raw:
@@ -124,8 +154,10 @@ def fetch_btc_threshold_markets() -> list[dict]:
         out.append({
             "slug": slug,
             "question": question,
+            "kind": kind,
             "threshold": threshold,
-            "direction": direction,
+            "low": low,
+            "high": high,
             "yes_token_id": str(token_ids[0]),
             "no_token_id": str(token_ids[1]),
             "end_date": m.get("endDate"),
@@ -157,35 +189,45 @@ def days_until(end_date: str | None) -> float | None:
         return None
 
 
-def naive_expected_prob(spot: float, threshold: float, direction: str, days_left: float | None) -> float:
-    """A toy heuristic — not a real pricing model.
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-    Gives a rough probability the threshold is hit by expiry. Used only to flag
-    obvious dislocations: when actual market price is wildly different from this
-    estimate, something is interesting.
 
-    Assumes ~3% daily BTC volatility, lognormal-ish. Calibrate later from data.
+def _prob_above(spot: float, threshold: float, days_left: float) -> float:
+    """P(S_T > threshold) under lognormal w/ daily drift + vol."""
+    sigma = DAILY_VOL * math.sqrt(days_left)
+    drift = (DAILY_DRIFT - 0.5 * DAILY_VOL ** 2) * days_left  # risk-neutral-ish
+    if sigma <= 0 or spot <= 0:
+        return 1.0 if spot >= threshold else 0.0
+    z = (math.log(threshold / spot) - drift) / sigma
+    return 1 - _norm_cdf(z)
+
+
+def naive_expected_prob(market: dict, spot: float, days_left: float | None) -> float:
+    """Probability the YES outcome resolves true, under our toy lognormal model.
+
+    Used only to flag obvious dislocations (gap > ~30c). NOT a real pricing model.
+    Model assumes ~4% daily vol with mild positive drift — tunable via env.
     """
-    if days_left is None or days_left <= 0:
-        # event has expired or unknown timing -> binary check
-        if direction == "above":
-            return 1.0 if spot >= threshold else 0.0
-        else:
-            return 1.0 if spot <= threshold else 0.0
+    kind = market["kind"]
 
-    # Distance in log-vol units
-    daily_vol = 0.03
-    sigma = daily_vol * math.sqrt(days_left)
-    if spot <= 0 or threshold <= 0:
+    # Already expired markets — bot shouldn't see them, but if it does, settle binary.
+    if days_left is None or days_left <= MIN_DAYS_LEFT:
+        if kind == "above":
+            return 1.0 if spot >= market["threshold"] else 0.0
+        if kind == "below":
+            return 1.0 if spot <= market["threshold"] else 0.0
+        if kind == "between":
+            return 1.0 if market["low"] <= spot <= market["high"] else 0.0
         return 0.5
-    log_dist = math.log(threshold / spot)
-    z = log_dist / sigma if sigma > 0 else 0
 
-    # P(spot at expiry > threshold)  for a geometric Brownian motion w/ zero drift
-    if direction == "above":
-        return 1 - 0.5 * (1 + math.erf(z / math.sqrt(2)))
-    else:
-        return 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    if kind == "above":
+        return _prob_above(spot, market["threshold"], days_left)
+    if kind == "below":
+        return 1 - _prob_above(spot, market["threshold"], days_left)
+    if kind == "between":
+        return _prob_above(spot, market["low"], days_left) - _prob_above(spot, market["high"], days_left)
+    return 0.5
 
 
 def append_jsonl(path: Path, rows: list[dict]) -> None:
@@ -220,15 +262,22 @@ def collect(ts: str) -> list[dict]:
                 continue
             yes_mid = (yes_bid + yes_ask) / 2
             d_left = days_until(m["end_date"])
-            expected = naive_expected_prob(spot, m["threshold"], m["direction"], d_left)
+
+            # Skip markets that already settled — they're not mispriced, just done.
+            if d_left is not None and d_left <= MIN_DAYS_LEFT:
+                continue
+
+            expected = naive_expected_prob(m, spot, d_left)
             gap = yes_mid - expected  # positive = market overpriced YES, negative = underpriced
 
             out.append({
                 "ts": ts,
                 "slug": m["slug"],
                 "question": m["question"],
-                "threshold": m["threshold"],
-                "direction": m["direction"],
+                "kind": m["kind"],
+                "threshold": m.get("threshold"),
+                "low": m.get("low"),
+                "high": m.get("high"),
                 "btc_spot": spot,
                 "days_left": d_left,
                 "yes_bid": yes_bid,
@@ -243,10 +292,13 @@ def collect(ts: str) -> list[dict]:
     # log the most extreme dislocations to stdout
     out.sort(key=lambda r: -abs(r["gap"]))
     for r in out[:5]:
-        sign = "+" if r["gap"] > 0 else ""
+        if r["kind"] == "between":
+            spec = f"{r['kind']} ${r['low']:,}-${r['high']:,}"
+        else:
+            spec = f"{r['kind']} ${r['threshold']:,}"
         print(
-            f"  gap={sign}{r['gap']:+.2f}  yes_mid={r['yes_mid']:.3f}  "
-            f"expected={r['naive_expected']:.3f}  thresh=${r['threshold']:,}  "
+            f"  gap={r['gap']:+.2f}  yes_mid={r['yes_mid']:.3f}  "
+            f"expected={r['naive_expected']:.3f}  {spec:<22}  "
             f"{r['slug'][:55]}",
             flush=True,
         )
